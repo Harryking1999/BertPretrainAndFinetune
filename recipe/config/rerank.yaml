@@ -1,0 +1,34 @@
+exp_dir: ../exp
+folder_name: rerank
+comment: ~
+
+##data
+train_data_file: ../data/data_example.jsonl
+test_data_file: ../data/data_example.jsonl
+
+##training
+random_seed: ~
+
+summary_type: cls
+rdrop: 0.5
+
+pointwise_weight: 0.5
+pointwise_threshold: 0.01
+classifier_dropout: 0
+contrast_temperature: 10
+
+neg_num: 3
+max_length: 32
+per_device_train_batch_size: 4
+
+learning_rate: 2.0e-5
+lr_scheduler_type: "linear"
+weight_decay: 0.01
+
+gradient_accumulation_steps: 1
+num_train_epochs: 5
+warmup_ratio: 0.1
+
+##model
+tokenizer: ~
+model_name: ../model/gte-multilingual-base
