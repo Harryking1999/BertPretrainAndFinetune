@@ -9,8 +9,8 @@ import datetime
 #torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(seconds=7200))#多卡时，数据量非常大的时候用
 from src.prepare_data import prepare_train_dataset
 from src.util.exp import setup
-from src.model import BertForRetrieve
-from src.util.trainer import Rerank2TripletTrainer
+from src.model import BertForRerankPointwise
+from src.util.trainer import RerankTrainerMultiFieldWithPointwise
 from transformers import AutoTokenizer, AutoConfig
 
 # import argparse
@@ -23,12 +23,15 @@ def main():
     model_cfg = AutoConfig.from_pretrained(exp_cfg.model_name, output_hidden_states = True)
     model_cfg.update(
         {
-            "summary_type": exp_cfg.get("summary_type", "cls"),
-            "summary_size": exp_cfg.get("summary_size", 512)
+            "rdrop": exp_cfg.get("rdrop", 0.5),
+            "pointwise_weight": exp_cfg.get("pointwise_weight", 0.7),
+            "pointwise_threshold": exp_cfg.get("pointwise_threshold", 0.0025),
+            "classifier_dropout": exp_cfg.get("classifier_dropout", 0),
+            "contrast_temperature": exp_cfg.get("contrast_temperature", 1),
         }
     )
 
-    model = BertForRetrieve.from_pretrained(
+    model = BertForRerankPointwise.from_pretrained(
         exp_cfg.model_name, config=model_cfg, ignore_mismatched_sizes=True, trust_remote_code=True
     )
     # print(type(model))
@@ -47,7 +50,7 @@ def main():
         max_length = exp_cfg.max_length,
         num_proc = 64
     )
-    trainer = Rerank2TripletTrainer(
+    trainer = RerankTrainerMultiFieldWithPointwise(
         config = exp_cfg,
         accelerator = accelerator,
         model = model,

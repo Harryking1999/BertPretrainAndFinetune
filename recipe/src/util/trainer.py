@@ -21,7 +21,8 @@ from transformers import (
 )
 
 from .data_collator import (
-    DataCollatorForTriplet
+    DataCollatorForTriplet,
+    DataCollatorForRerankMultiFieldWithPointwiseLabel
 )
 
 @dataclass
@@ -361,4 +362,115 @@ class Rerank2TripletTrainer(TripletTrainer):
             num_workers = 4
         )
         return train_dataloader
-            
+
+@dataclass
+class RerankTrainerMultiFieldWithPointwise(SimpleTrainer):
+    config: DictConfig
+    accelerator: Accelerator
+    model: PreTrainedModel
+    tokenizer: PreTrainedTokenizerBase
+    train_dataset: Dict[str, Dataset]
+    test_dataset: Dict[str, Dataset]
+
+    @th.no_grad()
+    def get_train_dataloader(self):
+        data_collator = DataCollatorForRerankMultiFieldWithPointwiseLabel(
+            tokenizer=self.tokenizer,
+            neg_num=self.config.neg_num,
+            pad_to_multiple_of=(8 if self.accelerator.use_fp16 else None)
+        )
+        train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size = self.config.per_device_train_batch_size,
+            shuffle = True,
+            collate_fn = data_collator,
+            pin_memory = True,
+            num_workers = 16
+        )
+        return train_dataloader
+    
+    def train(self):
+        config = self.config
+        accelerator = self.accelerator
+        model = self.model
+        optimizer, lr_scheduler = self.optimizer, self.lr_scheduler
+        train_dataloader = self.train_dataloader
+
+        total_batch_size = (
+            config.per_device_train_batch_size
+            * accelerator.num_processes
+            * config.gradient_accumulation_steps
+        )
+        logging.info("***** Training *****")
+        logging.info(f"  Num train examples = {len(self.train_dataset)}")
+        logging.info(f"  Num epochs = {config.num_train_epochs}")
+        logging.info(
+            f"  Instantaneous batch size per device = {config.per_device_train_batch_size}"
+        )
+        logging.info(
+            f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}"
+        )
+        logging.info(
+            f"  Gradient accumulation steps = {config.gradient_accumulation_steps}"
+        )
+        logging.info(f"  Total optimization steps = {config.max_train_steps}")
+        # only show the progress bar once on each machine.
+        progress_bar = tqdm(
+            range(config.max_train_steps),
+            disable=not accelerator.is_local_main_process,
+        )
+
+        #fgm = FGM(model)
+        completed_steps = 0
+        for epoch in range(config.num_train_epochs):
+            tr_loss = 0
+            tr_loss_adv = 0
+            for step, batch in enumerate(train_dataloader):
+                with accelerator.accumulate(model):
+                    model.train()
+
+                    outputs = model(**batch)
+                    loss = outputs.loss
+                    accelerator.backward(loss)
+
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
+                tr_loss += loss.item()
+
+                if (
+                    step % config.gradient_accumulation_steps == 0
+                    or step == len(train_dataloader) - 1
+                ):
+                    progress_bar.update(1)
+                    progress_bar.set_postfix(
+                        {
+                            "loss": tr_loss / (step + 1),
+                            "tmp_loss": loss.item()
+                        }
+                    )
+                    completed_steps += 1
+
+                    if completed_steps >= config.max_train_steps:
+                        logging.info(f"final step {completed_steps}:")
+                        logging.info(f"  loss: {tr_loss/ (step + 1)}")
+                        ckpt_dir = self.save_ckpt(completed_steps=completed_steps)
+                        if config.get("eval_step", False):
+                            pass
+                        break
+                    elif (
+                        config.ckpt_step > 0 and completed_steps % config.ckpt_step == 0
+                    ):
+                        logging.info(f"step {completed_steps}:")
+                        logging.info(f"  loss: {tr_loss/ (step + 1)}")
+                        ckpt_dir = self.save_ckpt(completed_steps=completed_steps)
+                        if config.get("eval_step", False):
+                            pass
+
+            if config.get("ckpt_epoch", True):
+                logging.info(f"epoch {epoch}:")
+                logging.info(f"  loss: {tr_loss/ (step + 1)}")
+                ckpt_dir = self.save_ckpt(completed_epochs=epoch)
+                if config.get("eval_epoch", False):
+                    pass
