@@ -25,6 +25,25 @@ from .data_collator import (
     DataCollatorForRerankMultiFieldWithPointwiseLabel
 )
 
+class FGM():
+    def __init__(self, model):
+        self.model = model
+        self.backup = {}
+    def attack(self, epsilon=1, emb_name='word_embeddings.'):
+        # emb_name参数要换成模型中的embedding的参数名
+        for name, param in self.model.named_parameters():
+            if(param.requires_grad and emb_name in name):
+                self.backup[name] = param.data.clone()
+                norm = th.norm(param.grad)
+                if(norm != 0 and not th.isnan(norm)):
+                    r_at = epsilon * param.grad / norm
+                    param.data.add_(r_at)
+    def restore(self, emb_name='word_embeddings.'):
+        for name, param in self.model.named_parameters():
+            if(param.requires_grad and emb_name in name):
+                assert name in self.backup
+                param.data = self.backup[name]
+        self.backup = {}
 @dataclass
 class BaseTrainer(ABC):
     config: DictConfig
@@ -290,7 +309,7 @@ class TripletTrainer(SimpleTrainer):
             disable=not accelerator.is_local_main_process,
         )
 
-        #fgm = FGM(model)
+        # fgm = FGM(model)
         completed_steps = 0
         for epoch in range(config.num_train_epochs):
             tr_loss = 0
@@ -302,11 +321,20 @@ class TripletTrainer(SimpleTrainer):
                     loss = model(train_batch=batch)
                     accelerator.backward(loss)
 
+                    ######### fgm start ########
+                    # fgm.attack()
+                    # loss_adv = model(train_batch=batch)
+                    # accelerator.backward(loss_adv)
+                    # fgm.restore()
+
+                    ######### fgm end ########
+
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad()
 
                 tr_loss += loss.item()
+                # tr_loss_adv += loss_adv.item()
 
                 if (
                     step % config.gradient_accumulation_steps == 0
@@ -316,6 +344,7 @@ class TripletTrainer(SimpleTrainer):
                     progress_bar.set_postfix(
                         {
                             "loss": tr_loss / (step + 1),
+                            # "adv_loss": tr_loss_adv / (step + 1),
                         }
                     )
                     completed_steps += 1
